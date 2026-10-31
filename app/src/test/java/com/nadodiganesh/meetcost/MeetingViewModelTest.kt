@@ -25,6 +25,7 @@ class MeetingViewModelTest {
 
     @After
     fun tearDown() {
+        viewModel.pause()
         Dispatchers.resetMain()
     }
 
@@ -42,6 +43,7 @@ class MeetingViewModelTest {
         viewModel.startOrResume()
         assertEquals(true, viewModel.isTracking.value)
         assertEquals(false, viewModel.isEnded.value)
+        viewModel.pause()
     }
 
     @Test
@@ -58,6 +60,37 @@ class MeetingViewModelTest {
         viewModel.setCurrency("EUR")
         viewModel.selectedCurrency.test {
             assertEquals("EUR", awaitItem())
+            cancelAndIgnoreRemainingEvents()
         }
+    }
+
+    @Test
+    fun `cycle theme cycles between system, light, and dark`() = runTest {
+        assertEquals(AppTheme.SYSTEM, viewModel.appTheme.value)
+        viewModel.cycleTheme()
+        assertEquals(AppTheme.LIGHT, viewModel.appTheme.value)
+        viewModel.cycleTheme()
+        assertEquals(AppTheme.DARK, viewModel.appTheme.value)
+        viewModel.cycleTheme()
+        assertEquals(AppTheme.SYSTEM, viewModel.appTheme.value)
+    }
+
+    @Test
+    fun `navigation between tracker and history`() = runTest {
+        assertEquals(AppScreen.TRACKER, viewModel.currentScreen.value)
+        viewModel.navigateToHistory()
+        assertEquals(AppScreen.HISTORY, viewModel.currentScreen.value)
+        viewModel.navigateToTracker()
+        assertEquals(AppScreen.TRACKER, viewModel.currentScreen.value)
+    }
+
+    @Test
+    fun `end meeting saves record to history and updates state`() = runTest {
+        viewModel.startOrResume()
+        viewModel.endMeeting()
+        assertEquals(false, viewModel.isTracking.value)
+        assertEquals(true, viewModel.isEnded.value)
+        assertEquals(1, viewModel.meetingHistory.value.size)
+        assertEquals(5, viewModel.meetingHistory.value[0].attendees)
     }
 }
