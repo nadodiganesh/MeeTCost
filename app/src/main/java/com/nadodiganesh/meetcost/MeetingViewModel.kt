@@ -3,6 +3,8 @@ package com.nadodiganesh.meetcost
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.nadodiganesh.meetcost.data.CurrencyRepository
+import com.nadodiganesh.meetcost.data.MeetingHistoryRepository
+import com.nadodiganesh.meetcost.data.MeetingRecord
 import com.nadodiganesh.meetcost.data.RealCurrencyRepository
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -14,8 +16,14 @@ enum class AppTheme {
     LIGHT, DARK, SYSTEM
 }
 
-class MeetingViewModel : ViewModel() {
-    private val repository: CurrencyRepository = RealCurrencyRepository()
+enum class AppScreen {
+    TRACKER, HISTORY
+}
+
+class MeetingViewModel(
+    private val repository: CurrencyRepository = RealCurrencyRepository(),
+    private var historyRepository: MeetingHistoryRepository? = null
+) : ViewModel() {
 
     val availableCurrencies = listOf("USD", "EUR", "GBP", "JPY", "INR", "CAD", "AUD", "BRL")
 
@@ -43,23 +51,50 @@ class MeetingViewModel : ViewModel() {
     private val _appTheme = MutableStateFlow(AppTheme.SYSTEM)
     val appTheme: StateFlow<AppTheme> = _appTheme
 
+    private val _currentScreen = MutableStateFlow(AppScreen.TRACKER)
+    val currentScreen: StateFlow<AppScreen> = _currentScreen
+
+    private val _meetingHistory = MutableStateFlow<List<MeetingRecord>>(emptyList())
+    val meetingHistory: StateFlow<List<MeetingRecord>> = _meetingHistory
+
+    private val _isIntroDismissed = MutableStateFlow(false)
+    val isIntroDismissed: StateFlow<Boolean> = _isIntroDismissed
+
     private var tickerJob: kotlinx.coroutines.Job? = null
 
     init {
         fetchRates()
-        startTicker()
+        observeHistory()
+    }
+
+    fun attachHistoryRepository(repo: MeetingHistoryRepository) {
+        historyRepository = repo
+        observeHistory()
+    }
+
+    private fun observeHistory() {
+        historyRepository?.let { repo ->
+            viewModelScope.launch {
+                repo.meetings.collect { list ->
+                    _meetingHistory.value = list
+                }
+            }
+            viewModelScope.launch {
+                repo.isIntroDismissed.collect { dismissed ->
+                    _isIntroDismissed.value = dismissed
+                }
+            }
+        }
     }
 
     private fun startTicker() {
         tickerJob?.cancel()
         tickerJob = viewModelScope.launch {
-            while (isActive) {
+            while (isActive && _isTracking.value) {
+                delay(1000L)
                 if (_isTracking.value) {
-                    delay(1000L)
                     _elapsedSeconds.value += 1
                     recalculateCost()
-                } else {
-                    delay(200L)
                 }
             }
         }
@@ -89,19 +124,42 @@ class MeetingViewModel : ViewModel() {
     fun startOrResume() {
         _isTracking.value = true
         _isEnded.value = false
+        startTicker()
     }
 
     fun pause() {
         _isTracking.value = false
+        tickerJob?.cancel()
     }
 
     fun endMeeting() {
         _isTracking.value = false
+        tickerJob?.cancel()
         _isEnded.value = true
+
+        val duration = _elapsedSeconds.value
+        val costUsd = _currentCostUsd.value
+        val exchangeRate = _exchangeRates.value[_selectedCurrency.value] ?: 1.0
+        val costSelected = costUsd * exchangeRate
+
+        val record = MeetingRecord(
+            endedAt = System.currentTimeMillis(),
+            durationSec = duration,
+            attendees = attendees.value,
+            hourlyRate = hourlyRate.value,
+            currency = _selectedCurrency.value,
+            cost = costSelected,
+            costUsd = costUsd
+        )
+        _meetingHistory.value = listOf(record) + _meetingHistory.value
+        viewModelScope.launch {
+            historyRepository?.addMeeting(record)
+        }
     }
 
     fun reset() {
         _isTracking.value = false
+        tickerJob?.cancel()
         _isEnded.value = false
         _elapsedSeconds.value = 0L
         _currentCostUsd.value = 0.0
@@ -113,5 +171,42 @@ class MeetingViewModel : ViewModel() {
 
     fun setTheme(theme: AppTheme) {
         _appTheme.value = theme
+    }
+
+    fun cycleTheme() {
+        _appTheme.value = when (_appTheme.value) {
+            AppTheme.SYSTEM -> AppTheme.LIGHT
+            AppTheme.LIGHT -> AppTheme.DARK
+            AppTheme.DARK -> AppTheme.SYSTEM
+        }
+    }
+
+    fun navigateToHistory() {
+        _currentScreen.value = AppScreen.HISTORY
+    }
+
+    fun navigateToTracker() {
+        _currentScreen.value = AppScreen.TRACKER
+    }
+
+    fun deleteMeeting(id: String) {
+        _meetingHistory.value = _meetingHistory.value.filter { it.id != id }
+        viewModelScope.launch {
+            historyRepository?.deleteMeeting(id)
+        }
+    }
+
+    fun clearAllHistory() {
+        _meetingHistory.value = emptyList()
+        viewModelScope.launch {
+            historyRepository?.clearHistory()
+        }
+    }
+
+    fun dismissIntro() {
+        _isIntroDismissed.value = true
+        viewModelScope.launch {
+            historyRepository?.setIntroDismissed(true)
+        }
     }
 }
